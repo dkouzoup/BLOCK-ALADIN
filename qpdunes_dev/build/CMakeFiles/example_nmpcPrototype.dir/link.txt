@@ -1,0 +1,1 @@
+/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_nmpcPrototype.dir/examples/nmpcPrototype.c.o  -o bin/nmpcPrototype  lib/libqpdunes.a -lm 

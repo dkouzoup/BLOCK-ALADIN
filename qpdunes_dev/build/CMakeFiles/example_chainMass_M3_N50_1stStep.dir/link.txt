@@ -1,0 +1,1 @@
+/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_chainMass_M3_N50_1stStep.dir/examples/chainMass_M3_N50_1stStep.c.o  -o bin/chainMass_M3_N50_1stStep  lib/libqpdunes.a -lm 
