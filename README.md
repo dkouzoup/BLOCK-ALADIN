@@ -3,10 +3,10 @@ A prototype implementation of the block-based ALADIN scheme for optimal control
 
 # INSTRUCTIONS
 
-- Simply open script runOCP.m, insert the simulation details of your choice and click run.
+- Open script runOCP.m, insert the simulation details of your choice and click run.
 
-- The integrator included in this repository is compiled for MAC OS X. To use on other operating systems, the user must install the latest version of ACADO (master branch) and run the generateSim.m script.
+- The integrator included in this repository is compiled for MAC OS X. To use on other operating systems, the user must install the latest version of ACADO (master branch is recommended) and set the EXPORT_INTEGRATOR flag to 1.
 
-- For non MAC OS X users, the provided QP solver qpDUNES must be also compiled. Simply type "make" on the MATLAB command window inside the folder qpdunes_dev/interfaces/matlab.
+- To generate MEX interfaces for the algorithmic parts that are written in C, set the GENERATE_MEX flag to 1 (provided files are for MAC OS X and block sizes 5 and 10). 
 
-- The algorithm at this stage is provided as a proof of concept for the block based ALADIN scheme. The complete code containing all reported implementations and timings will become public once the paper is accepted for publication.
+- Users must also install the dense QP solver qpOASES (http://www.qpoases.org/)
