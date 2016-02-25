@@ -1,1 +1,0 @@
-/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_doubleIntegrator_mpc.dir/examples/doubleIntegrator_mpc.c.o  -o bin/doubleIntegrator_mpc  lib/libqpdunes.a -lm 

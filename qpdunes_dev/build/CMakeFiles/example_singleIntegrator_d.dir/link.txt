@@ -1,1 +1,0 @@
-/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_singleIntegrator_d.dir/examples/singleIntegrator_d.c.o  -o bin/singleIntegrator_d  lib/libqpdunes.a -lm 

@@ -1,4 +1,4 @@
-function [ X, U, Lc, i ] = BLOCK_ALADIN_fun(N, TOL, rho, ALADIN_iter, BLOCKSIZE, PROBLEM)
+function [ X, U, Lc, timelog ] = BLOCK_ALADIN_fun(N, TOL, rho, ALADIN_iter, BLOCKSIZE, PROBLEM)
 
 % BLOCK_ALADIN_FUN A prototype implementation of the block ALADIN scheme
 %                  for optimal control.
@@ -7,7 +7,6 @@ function [ X, U, Lc, i ] = BLOCK_ALADIN_fun(N, TOL, rho, ALADIN_iter, BLOCKSIZE,
 % INPUTS
 % =======
 %
-% h:             Sampling time [s]
 % N:             Number of shooting intervals
 % TOL:           Tolerance for termination condition (distance from optimal solution)
 % rho:           Regularization term (tuning parameter)
@@ -22,6 +21,7 @@ function [ X, U, Lc, i ] = BLOCK_ALADIN_fun(N, TOL, rho, ALADIN_iter, BLOCKSIZE,
 % X:             Optimal state trajectory
 % U:             Optimal input trajectory
 % Lc             Optimal multipliers for linear coupling constraints
+% timelog:       Structure with logging of timings
 %
 % =======
 % LICENSE
@@ -57,25 +57,18 @@ function [ X, U, Lc, i ] = BLOCK_ALADIN_fun(N, TOL, rho, ALADIN_iter, BLOCKSIZE,
 %    \date 2015
 
 MAXIT      = 40;    % maximum number of ALADIN iterations
+WARMSTART  = 1;     % to use qpOASES_sequence in each seperate block
 active_TOL = 1e-8;  % tolerance for active inequality constraints
 INFTY      = 1e12;  % infinity
 
-% add qpDUNES to path
-qpDUNES_PATH = 'qpdunes_dev/interfaces/matlab';
-addpath(qpDUNES_PATH);
+% setup option struct for qpOASES in subproblems
+qpOptions_NLP = qpOASES_options('MPC');
 
-% setup option struct
-qpOptions_NLP = qpDUNES_options(...
-    'default',              ...
-    'printLevel',  0,       ...
-    'logLevel',    1,       ...
-    'maxIter',     200,     ...
-    'lsType',      4,       ... % accelerated gradient biscection LS
-    'regType',     2,       ... % regularize only singular directions; 1 is normalized Levenberg Marquardt
-    'stationarityTolerance', 1e-6 ...
-    );
-
-qpOptions_CQP = qpOptions_NLP;
+if WARMSTART == 1
+    QPhandles = cell(N/BLOCKSIZE,1);
+else
+    QPhandles = [];
+end
 
 % load problem data
 nu   = PROBLEM.nu;
@@ -104,6 +97,7 @@ uUpp(uUpp >  INFTY) =  INFTY;
 ziLow = [xLow; uLow];
 ziUpp = [xUpp; uUpp];
 
+
 % load optimal solution if available
 try
     eval(['load sol_' num2str(N) '.mat X U'])
@@ -130,23 +124,89 @@ U  = zeros(nu, N);
 L  = zeros(nx, N);             % multipliers of all equality constraints
 Lc = zeros(nx, N/BLOCKSIZE-1); % multipliers of coupling constraints
 
-
 Hi = blkdiag(Q, R);
 H  = repmat( Hi, 1, N );
 P  = Q;
 ziRef = [xref; uref];
 g = [repmat( -Hi*ziRef, N, 1 ); -Q*xref ];
-C = ones(nx,N*(nx+nu));
-cFull = ones(N*nx,1);
+
+C = ones(nx,N*(nx+nu)); % to store concatenated sensitivities (qpDUNES-style)
+cAbs = ones(N*nx,1);
 
 DX = 1;
 DU = 1;
 i  = 0;
+timelog = [];
 
 zOpts   = []; % to store all solutions of stage NLPs
 low_act = []; % flag for active lower bounds
 upp_act = []; % flag for active upper bounds
 
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+
+% Build H_k, H_N, zref_k and zref_N (g_k, g_N are calculated online)
+Htemp = [];
+ztemp = [];
+Hnlps = [];
+
+for ii = 1:BLOCKSIZE
+    Htemp = blkdiag(Htemp,Hi);
+    ztemp = [ztemp; xref; uref];
+end
+Hstagek = blkdiag(Htemp,zeros(nx));
+
+HstageN = blkdiag(Htemp,P);
+zstagek = [ztemp; zeros(nx,1)];
+zstageN = [ztemp; xref];
+
+for ii = 1:N/BLOCKSIZE-1
+    Hnlps = blkdiag(Hnlps, Hstagek);
+end
+Hnlps = blkdiag(Hnlps, HstageN);
+
+% Build coupling matrix and vector for the sparse case
+
+% first coupling matrix
+E0 = zeros((N/BLOCKSIZE-1)*nx,ns);
+E0(1:nx,end-nx+1:end) = -eye(nx);
+E = E0;
+
+% second coupling matrix (rest is derived by shifting this one)
+Ek = zeros((N/BLOCKSIZE-1)*nx,ns);
+Ek(1:nx,1:nx) = eye(nx);
+if N/BLOCKSIZE >= 3
+    Ek(nx+1:2*nx,end-nx+1:end) = -eye(nx);
+    for ii = 2:N/BLOCKSIZE
+        E  = [E Ek];
+        Ek = circshift(Ek,nx,1);
+        if ii == N/BLOCKSIZE-1
+            Ek(Ek == -1) = 0; % as there is no -eye(nx) term in last Ek
+        end
+    end
+else
+    E = [E Ek];
+end
+
+e = zeros((N/BLOCKSIZE-1)*nx,1);
+
+% Derivatives of box constraints for sparse case (order: x_up u_up x_low u_low)
+D_states = [ eye(nx) zeros(nx,nu)];
+D_inputs = [zeros(nu,nx)  eye(nu)];
+
+D = [];
+for ii = 1:BLOCKSIZE
+    D = blkdiag(D,[D_states; D_inputs; -D_states; -D_inputs]);
+end
+D = blkdiag(D,[eye(nx);-eye(nx)]);
+
+% store derivatives of inequalities in cells (as the dimensions are varying)
+Dineq = {};
+for ii = 1:N/BLOCKSIZE
+    Dineq{ii} = D;
+end
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 
 while max(DX, DU) > TOL && i <= MAXIT
     
@@ -155,7 +215,7 @@ while max(DX, DU) > TOL && i <= MAXIT
     % Initialize upper and lower bounds to infinity
     zLow = -repmat( INFTY, N*(nx+nu)+nx, 1 );
     zUpp =  repmat( INFTY, N*(nx+nu)+nx, 1 );
-        
+    
     % % % % % % % % % % % % % DECOUPLING STEP % % % % % % % % % % % % % % %
     
     Xl = X;
@@ -200,27 +260,20 @@ while max(DX, DU) > TOL && i <= MAXIT
                 
                 k_index = (k-1)*BLOCKSIZE+k_i;
                 C(:,(k_index-1)*nz+1:k_index*nz)   = [states.sensX states.sensU];
-                cFull((k_index-1)*nx+1:k_index*nx) = states.value - states.sensX*Xl(:,k_index) - states.sensU*Ul(:,k_index);
-
+                cAbs((k_index-1)*nx+1:k_index*nx) = states.value - states.sensX*Xl(:,k_index) - states.sensU*Ul(:,k_index);
+                
+                % log integration time
+                timelog(i+1).integrationTime(NLP,k_index) = 1000*info.clockTime;
             end
                         
-            lbi = [repmat(ziLow,BLOCKSIZE,1);xLow];
-            ubi = [repmat(ziUpp,BLOCKSIZE,1);xUpp];
+            % PERFORM AN SQP ITERATION:
+            [zOpt, stat, lambda_nlp, mu_nlp, obj_nlp, itlog, QPhandles ] = ...
+                iterate_NLP(Hi, Pi, gi, Ci, ci, ziLow, xLow, ziUpp, xUpp, k, BLOCKSIZE, nx, nu, x0, qpOptions_NLP, WARMSTART, QPhandles);
+                        
+            % log QP solution and block condensing times
+            timelog(i+1).QPTime(NLP,k)         = 1000*itlog.QPTime;
+            timelog(i+1).condensingTime(NLP,k) = 1000*itlog.condensingTime;
             
-            if k == 1
-                % add an initial value constraint (update on block index 0)
-                lbi(1:nx) = x0;
-                ubi(1:nx) = x0;
-            end
-            
-            qpDUNES( 'init', BLOCKSIZE, Hi, Pi, gi, Ci, ci, ...
-                lbi, ubi, [], [], [], qpOptions_NLP);
-            
-            % SOLVE:
-            tic
-            [zOpt, stat, lambda, mu, objFctnVal] = qpDUNES( 'solve' );
-            qpSolveTime = toc;
-                                    
             zOpts(:,k) = zOpt;
             
             % TAKE A FULL STEP:
@@ -234,7 +287,7 @@ while max(DX, DU) > TOL && i <= MAXIT
             end
         end
         
-        % check for active inequality constraints in block
+        % !! Check for active inequality constraints in this block: !!
         block_low = [repmat(ziLow,BLOCKSIZE,1);xLow];
         err_low = abs(zOpt - block_low);
         ind_low = find(err_low < active_TOL);
@@ -265,6 +318,9 @@ while max(DX, DU) > TOL && i <= MAXIT
             input.u = Ul(:,(k-1)*BLOCKSIZE+k_i);
             [states info] = integrate(input);
             
+            % log re-linearization times
+            timelog(i+1).relinearize(k,k_i) = 1000*info.clockTime;
+            
             k_index = (k-1)*BLOCKSIZE+k_i;
             
             % calculate c_k - xl_{k+1} for the relative dynamics
@@ -273,33 +329,247 @@ while max(DX, DU) > TOL && i <= MAXIT
             else
                 x_next = Sl;
             end
-            res((k_i-1)*nx+1:k_i*nx,k) = states.value - x_next;
+            cRel((k_i-1)*nx+1:k_i*nx,k) = states.value - x_next;
             
             C(:,(k_index-1)*nz+1:k_index*nz)   = [states.sensX states.sensU];
-            cFull((k_index-1)*nx+1:k_index*nx) = states.value - states.sensX*Xl(:,k_index) - states.sensU*Ul(:,k_index);
+            cAbs((k_index-1)*nx+1:k_index*nx) = states.value - states.sensX*Xl(:,k_index) - states.sensU*Ul(:,k_index);
         end
-    
+        
     end
-       
+    
+    % % % % % % % % % % % END DECOUPLING STEP % % % % % % % % % % % % % % %
+   
     norm_diff = [norm([Xl(:,1:N)-X(:,1:N);Ul-U(:,1:N)])];
     disp(['Norm decoupled diff :  ' num2str(norm_diff) ' ']);
     
     % % % % %  % % % % % % % % CONSENSUS STEP % % % % % % % % % % % % % % %
-                 
-    zLow(1:nx) = x0;
-    zUpp(1:nx) = x0;
-    qpDUNES( 'init', N, H, P, g, C, cFull, ...
-        zLow, zUpp, [], [], [], qpOptions_CQP);
     
-    % SOLVE:
-    tic
-    [zOpt, stat, lambda_abs, mu, objFctnVal] = qpDUNES( 'solve' );
-    qpSolveTime = toc;
+    % get local NLP solutions and split them
+    uindx = [repmat([zeros(nx,1); ones(nu,1)],BLOCKSIZE,1); zeros(nx,1)];
+    uindx(1:nx) = 1;
+    uOpts = zOpts(find(uindx),:);
+    xOpts = zOpts(find(~uindx),:);
     
-    % extract multipliers of coupling constraints
-    L = reshape(lambda_abs,nx,N);
-    Lc = L(:,BLOCKSIZE:BLOCKSIZE:N-BLOCKSIZE);
+    uNLP  = uOpts(:);
+    xNLP  = xOpts(:);
+    zNLP  = zOpts(:);
+    
+    % get A,B matrices of the last linearization
+    for ii = 1:N
+        ABtmp(:,:,ii) = C(:,(ii-1)*(nx+nu)+1:ii*(nx+nu));
+    end
+    
+    % use local NLP solutions to build gradient
+    gnlps = [];
+    for ii = 1:N/BLOCKSIZE
+        gtemp = [];
+        if ii < N/BLOCKSIZE
+            gtemp = Hstagek*(zOpts(:,ii) - zstagek);
+        else
+            gtemp = HstageN*(zOpts(:,ii) - zstageN);
+        end
+        gnlps = [gnlps; gtemp];
+    end
+    
+    % setup G term
+    G = E*zNLP-e;
+    
+    upp_act(end-nx+1:end,1:end-1) = 0;
+    low_act(end-nx+1:end,1:end-1) = 0;
+    
+    % get indicies of active constraints
+    zCon = [];
+    for ii = 1:N/BLOCKSIZE
+        upp_tmp = upp_act(:,ii);
+        low_tmp = low_act(:,ii);
+        uppN    = upp_tmp(end-nx+1:end); upp_tmp(end-nx+1:end) = [];
+        lowN    = low_tmp(end-nx+1:end); low_tmp(end-nx+1:end) = [];
         
+        upp_tmp = reshape(upp_tmp,nx+nu,BLOCKSIZE);
+        low_tmp = reshape(low_tmp,nx+nu,BLOCKSIZE);
+        zC_tmp  = [upp_tmp; low_tmp];
+        zC_tmp  = zC_tmp(:);
+        
+        zCon(:,ii) = [zC_tmp; uppN; lowN];
+    end
+    
+    
+    % block condense
+    Hnlps_CON = [];
+    gnlps_CON = [];
+    
+    for ii = 1:N/BLOCKSIZE
+        
+        ABtmpp = [];
+        Htmp   =  Hnlps((ii-1)*ns+1:ii*ns,(ii-1)*ns+1:ii*ns);
+        Htmpp  = [];
+        
+        for jj = 1:BLOCKSIZE
+            ABtmpp     = [ABtmpp ABtmp(:,:,(ii-1)*BLOCKSIZE+jj)];
+            stageindex = (jj-1)*(nx+nu)+1:jj*(nx+nu);
+            Htmpp      = [Htmpp Htmp(stageindex,stageindex)];
+        end
+        
+        HtmpN = Htmp(end-nx+1:end,end-nx+1:end);
+        cinput.H = [Htmpp(:); HtmpN(:)];
+        cinput.g = gnlps((ii-1)*ns+1:ii*ns,1);
+        cinput.AB= ABtmpp;
+        cinput.b = cRel(:,ii);
+        cinput.lb= -inf(ns,1);
+        cinput.ub= inf(ns,1);
+        
+        eval(['coutput = condense_N' num2str(BLOCKSIZE) '(cinput);']);
+        
+        timelog(i+1).blockCondenseTime(ii) = 1000*coutput.info.cpuTime;
+        
+        % X{ii}_opt = cdatas{ii}.A*U{ii}_opt + cdatas.C
+        cdatas{ii}.A    = [eye(nx) zeros(nx,size(coutput.Ac,2)-nx); coutput.Ac];
+        cdatas{ii}.C    = [zeros(nx,1); coutput.d-coutput.Ac*uOpts(:,ii)+xOpts(:,ii)];
+        cdatas{ii}.Crel = [zeros(nx,1); coutput.d];
+        
+        Hnlps_CON  = blkdiag(Hnlps_CON,coutput.Hc);
+        gnlps_CON  = [gnlps_CON; coutput.gc];
+        
+    end
+    
+    % Build coupling matrix and vector for the condensed case
+    
+    % initial block
+    Ek = zeros((N/BLOCKSIZE-1)*nx,nb);
+    Ek(1:nx,:) = -cdatas{1}.A(end-nx+1:end,:);
+    E_CON = Ek;
+    e_CON = zeros((N/BLOCKSIZE-1)*nx,1);
+    e_CON(1:nx) = cdatas{1}.C(end-nx+1:end);
+    
+    for ii = 2:N/BLOCKSIZE
+        % build and append intermediate blocks
+        Ek = zeros((N/BLOCKSIZE-1)*nx,nb);
+        Ek(1:nx,1:nx)   = eye(nx);
+        if N/BLOCKSIZE >= 3
+            Ek(nx+1:2*nx,:) = -cdatas{ii}.A(end-nx+1:end,:);
+            Ek = circshift(Ek,(ii-2)*nx,1);
+            if ii == N/BLOCKSIZE
+                Ek(1:nx,:) = 0; % modify last block
+            end
+        end
+        E_CON  = [E_CON Ek];
+        if ii < N/BLOCKSIZE
+            e_CON((ii-1)*nx+1:ii*nx)= cdatas{ii}.C(end-nx+1:end);
+        end
+    end
+    
+    % Derivatives of box constraints for the condensed case (order: x_up u_up x_low u_low)
+    Dineq_CON = {};
+    dineq_CON = {};
+    for ii =1:N/BLOCKSIZE
+        D_inputs = [zeros(nu,nx)  eye(nu) zeros(nu,(BLOCKSIZE-1)*nu)];
+        D_temp   = [];
+        d_temp   = [];
+        for jj = 1:BLOCKSIZE+1
+            D_states = cdatas{ii}.A((jj-1)*nx+1:jj*nx,:);
+            d_states = cdatas{ii}.Crel((jj-1)*nx+1:jj*nx);
+            if jj < BLOCKSIZE + 1
+                D_temp = [D_temp; D_states; D_inputs; -D_states; -D_inputs];
+                d_temp = [d_temp; d_states; zeros(nu,1); -d_states; zeros(nu,1)];
+            else
+                D_temp = [D_temp; D_states; -D_states];
+                d_temp = [d_temp; d_states; -d_states];
+            end
+            D_inputs = circshift(D_inputs,nu,2);
+        end
+        Dineq_CON{ii} = D_temp;
+        dineq_CON{ii} = d_temp;
+    end
+    
+    G_CON = E_CON*uNLP-e_CON;
+    
+    % keep only derivatives of active constraints (condensed case)
+    Diter_CON = Dineq_CON;
+    diter_CON = dineq_CON;
+    for ii = 1:N/BLOCKSIZE
+        zTemp = zCon(:,ii);
+        DTemp = Diter_CON{ii};
+        dTemp = diter_CON{ii};
+        rindx = zTemp == 0;
+        DTemp(rindx,:) = [];
+        dTemp(rindx)   = [];
+        Diter_CON{ii}  = DTemp;
+        diter_CON{ii}  = dTemp;
+    end
+    
+    % add initial condition constraint
+    Diter_CON{1} = [eye(nx) zeros(nx,nb-nx); Diter_CON{1}];
+    diter_CON{1} = [zeros(nx,1); diter_CON{1}];
+    
+    % restructure data to pass in mex file
+    inputd.C = [];
+    for ii = 1:N/BLOCKSIZE-1
+        inputd.C = [inputd.C E_CON((ii-1)*nx+1:ii*nx,(ii-1)*nb+1:ii*nb)];
+    end
+    inputd.c = -G_CON; % \tilde{c} = c - E*Z = - G_CON
+    
+    inputd.H = [];
+    for ii = 1:N/BLOCKSIZE
+        inputd.H = [inputd.H Hnlps_CON((ii-1)*nb+1:ii*nb,(ii-1)*nb+1:ii*nb)];
+    end
+    inputd.g = gnlps_CON;
+    
+    DT   = []; % all D's transposed [D_0' D_1' ...]
+    d    = []; % all d's [d_0; d_1; ...]
+    nact = []; % number of active constraints per block
+    
+    for ii = 1:(N/BLOCKSIZE)
+        Dtmp = Diter_CON{ii};
+        dtmp = diter_CON{ii};
+        DT   = [DT Dtmp'];
+        d    = [d; dtmp];
+        nact = [nact; size(Dtmp,1)];
+    end
+    DT = [DT zeros((BLOCKSIZE*nu+nx), ((N/BLOCKSIZE)*(BLOCKSIZE*nu+nx)*(BLOCKSIZE*nu+nx)-numel(DT))/(BLOCKSIZE*nu+nx),1)];
+    d  = [d; zeros((BLOCKSIZE*nu+nx)*(N/BLOCKSIZE)-sum(nact),1)];
+    
+    inputd.DT   = DT;
+    inputd.d    = d;
+    inputd.nact = nact;
+    
+    eval(['outputd = dualStep_N' num2str(BLOCKSIZE) '(inputd);'])
+    
+    % log timings
+    timelog(i+1).formDualHessianTime       = 1000*outputd.info.formTime';
+    timelog(i+1).factorizeSolveTime        = 1000*outputd.info.solveTime;
+    timelog(i+1).formEliminationMatrixTime = 1000*outputd.info.PTime';
+    timelog(i+1).nullspaceTime             = 1000*outputd.info.nullspaceTime';
+    
+    % update primal and dual variables
+    dualVars_CON   = outputd.lambda;
+    primalStep_CON = outputd.primalStep;
+    
+    % calculate new primal iterate and expand solution
+    uVars = primalStep_CON + uNLP;
+    uVars = reshape(uVars,nu*BLOCKSIZE+nx,N/BLOCKSIZE);
+    utmps = uVars(nx+1:end,:);
+    
+    primalVars_CON = [];
+    for ii = 1:N/BLOCKSIZE
+        xtmp = cdatas{ii}.A*uVars(:,ii)+cdatas{ii}.C;
+        xtmp = reshape(xtmp,nx,BLOCKSIZE+1);
+        if ii == N/BLOCKSIZE
+            xNtmp = xtmp(:,end);
+        end
+        xtmp = xtmp(:,1:end-1);
+        utmp = reshape(utmps(:,ii),nu,BLOCKSIZE);
+        ztmp = [xtmp; utmp];
+        ztmp = ztmp(:);
+        primalVars_CON = [primalVars_CON; ztmp];
+    end
+    primalVars_CON =[primalVars_CON; xNtmp];
+    
+        
+    % % % % %  % % % % % % END CONSENSUS STEP % % % % % % % % % % % % % % %
+
+    zOpt = primalVars_CON;
+    Lc   = -reshape(dualVars_CON,nx,N/BLOCKSIZE-1);
+    
     % TAKE A FULL STEP:
     for k = 1:N
         temp = zOpt((k-1)*nz+1:(k-1)*nz+nx,1);
@@ -310,7 +580,10 @@ while max(DX, DU) > TOL && i <= MAXIT
     end
     temp = zOpt(N*nz+1:end,1);
     X(:,N+1) = temp;
-          
+    
+    
+    % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+    
     norm_diff = [norm([Xl(:,1:N)-X(:,1:N);Ul-U(:,1:N)])];
     disp(['Norm consensus step:  ' num2str(norm_diff) ' ']);
     
@@ -330,6 +603,12 @@ while max(DX, DU) > TOL && i <= MAXIT
     i = i+1;
 end
 
+% clean qpOASES memory
+if WARMSTART == 1
+    for ii = 1: N/BLOCKSIZE
+        qpOASES_sequence( 'c',QPhandles{ii});
+    end
+end
 
 end
 

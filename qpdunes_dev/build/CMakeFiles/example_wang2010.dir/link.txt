@@ -1,1 +1,0 @@
-/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_wang2010.dir/examples/wang2010.c.o  -o bin/wang2010  lib/libqpdunes.a -lm 

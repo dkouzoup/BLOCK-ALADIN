@@ -1,1 +1,0 @@
-/usr/bin/cc   -fPIC -Wall -Wextra -pedantic -Wshadow -g -finline-functions -std=c99 -O3 -DNDEBUG -march=native -Wl,-search_paths_first -Wl,-headerpad_max_install_names   CMakeFiles/example_example1.dir/examples/example1.c.o  -o bin/example1  lib/libqpdunes.a -lm 
