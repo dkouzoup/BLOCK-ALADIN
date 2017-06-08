@@ -2,15 +2,15 @@
 % LICENSE
 % =======
 %
-%    This file is part of BLOCK ALADIN 
+%    This file is part of BLOCK ALADIN
 %    (https://github.com/dkouzoup/BLOCK-ALADIN).
 %
-%    BLOCK ALADIN: A Block Based Augmented Lagrangian Algorithm for Highly 
+%    BLOCK ALADIN: A Block Based Augmented Lagrangian Algorithm for Highly
 %    Parallelizable Optimal Control.
 %
-%    Copyright (C) 2015-2016 by Dimitris Kouzoupis and Rien Quirynen, 
+%    Copyright (C) 2015-2016 by Dimitris Kouzoupis and Rien Quirynen,
 %    Albert Ludwigs University of Freiburg and K.U.Leuven.
-%    Developed under the supervision of Boris Houska and Moritz Diehl. 
+%    Developed under the supervision of Boris Houska and Moritz Diehl.
 %    All rights reserved.
 %
 %    BLOCK ALADIN is a free software; you can redistribute it and/or
@@ -25,14 +25,15 @@
 %
 %    You should have received a copy of the GNU Lesser General Public
 %    License along with BLOCK ALADIN; if not, write to the Free Software
-%    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, 
+%    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 %    MA  02110-1301  USA
 %
 %    \authors Dimitris Kouzoupis, Rien Quirynen
 %    \date 2015
 
+function generateSim()
+
 clc;
-clear all;
 close all;
 
 h = 0.2;
@@ -86,4 +87,5 @@ cd sim_export
 make_acado_integrator('../integrate');
 cd ..
 
+end
 

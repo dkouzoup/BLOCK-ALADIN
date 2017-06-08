@@ -33,8 +33,8 @@
 
 clear all; close all; clc
 
-EXPORT_INTEGRATOR = 0;
-GENERATE_MEX      = 0;
+EXPORT_INTEGRATOR = 1;
+GENERATE_MEX      = 1;
 
 % Simulation parameters
 rho   = 1;      % Scaling factor
